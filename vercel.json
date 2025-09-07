@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "api/events.py": {
+      "runtime": "python3.9"
+    }
+  },
+  "env": {
+    "SLACK_SIGNING_SECRET": "@slack_signing_secret",
+    "SLACK_BOT_TOKEN": "@slack_bot_token",
+    "GOOGLE_CHAT_ANNOUNCEMENTS_WEBHOOK_URL": "@google_chat_announcements_webhook_url",
+    "GOOGLE_CHAT_GENERAL_WEBHOOK_URL": "@google_chat_general_webhook_url"
+  }
+}

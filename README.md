@@ -58,9 +58,16 @@ vercel
 In your Vercel dashboard, go to Settings > Environment Variables and add:
 
 - `SLACK_BOT_TOKEN`
-- `SLACK_SIGNING_SECRET` 
+- `SLACK_SIGNING_SECRET`
 - `GOOGLE_CHAT_GENERAL_WEBHOOK_URL`
 - `GOOGLE_CHAT_ANNOUNCEMENTS_WEBHOOK_URL`
+
+### 6. Test the Bot
+
+After deployment, send a test message in #general and #announcements on Slack. The bot will automatically:
+- Fetch the channel name using the Slack API
+- Get the user's display name
+- Forward messages only from #general and #announcements channels to the respective Google Chat webhooks
 
 ## How It Works
 
@@ -89,9 +96,8 @@ In your Vercel dashboard, go to Settings > Environment Variables and add:
 
 ## Limitations
 
-- Currently uses placeholder user names (would need Slack Web API integration for real names)
-- Channel detection is simplified (could be enhanced with Slack Web API)
 - Only forwards text messages (not files, images, etc.)
+- Only forwards from channels named exactly "general" and "announcements"
 
 ## Contributing
 

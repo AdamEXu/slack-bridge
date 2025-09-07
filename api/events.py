@@ -19,10 +19,11 @@ def handler(request):
     
     # Get environment variables
     slack_signing_secret = os.environ.get('SLACK_SIGNING_SECRET')
+    slack_bot_token = os.environ.get('SLACK_BOT_TOKEN')
     gchat_announcements_url = os.environ.get('GOOGLE_CHAT_ANNOUNCEMENTS_WEBHOOK_URL')
     gchat_general_url = os.environ.get('GOOGLE_CHAT_GENERAL_WEBHOOK_URL')
-    
-    if not all([slack_signing_secret, gchat_announcements_url, gchat_general_url]):
+
+    if not all([slack_signing_secret, slack_bot_token, gchat_announcements_url, gchat_general_url]):
         return {
             'statusCode': 500,
             'body': json.dumps({'error': 'Missing required environment variables'})
@@ -44,11 +45,14 @@ def handler(request):
         # Parse the request body
         event_data = json.loads(body)
         
-        # Handle URL verification challenge
+        # Handle URL verification challenge (required by Slack)
         if event_data.get('type') == 'url_verification':
+            challenge = event_data.get('challenge', '')
+            print(f"URL verification challenge received: {challenge}")
             return {
                 'statusCode': 200,
-                'body': event_data.get('challenge', '')
+                'headers': {'Content-Type': 'text/plain'},
+                'body': challenge
             }
         
         # Handle event callbacks
@@ -57,42 +61,35 @@ def handler(request):
             
             # Only process message events (not reactions, etc.)
             if event.get('type') == 'message' and event.get('subtype') is None:
-                # Get channel info
+                user_id = event.get('user')
+                message_text = event.get('text', '')
                 channel_id = event.get('channel')
-                channel_name = get_channel_name(channel_id, event_data)
 
-                # Only forward messages from #general and #announcements
-                # For initial setup, we'll forward from any channel and log the channel ID
-                # so you can configure the channel mappings
-                if channel_name in ['general', 'announcements'] or channel_name == 'unknown':
-                    user_id = event.get('user')
-                    message_text = event.get('text', '')
+                # Skip empty messages or bot messages
+                if not message_text.strip() or not user_id:
+                    return {
+                        'statusCode': 200,
+                        'body': json.dumps({'status': 'skipped_empty_or_bot_message'})
+                    }
 
-                    # Skip empty messages
-                    if not message_text.strip():
-                        return {
-                            'statusCode': 200,
-                            'body': json.dumps({'status': 'skipped_empty_message'})
-                        }
+                # Get channel name using Slack API
+                channel_name = get_channel_name(channel_id, slack_bot_token)
 
-                    # Get user display name
-                    user_name = get_user_display_name(user_id, event_data)
+                # Get user display name using Slack API
+                user_name = get_user_display_name(user_id, slack_bot_token)
 
-                    # Log channel info for setup purposes
-                    print(f"Message from channel {channel_id} ({channel_name}): {user_name}: {message_text[:50]}...")
+                # Log all messages for debugging
+                print(f"Message from #{channel_name} ({channel_id}): {user_name}: {message_text[:50]}...")
 
-                    # Determine which webhook to use
-                    if channel_name == 'announcements':
-                        webhook_url = gchat_announcements_url
-                    elif channel_name == 'general':
-                        webhook_url = gchat_general_url
-                    else:
-                        # For unknown channels, use general webhook and log
-                        webhook_url = gchat_general_url
-                        print(f"Unknown channel {channel_id}, using general webhook")
-
-                    # Forward to Google Chat
-                    forward_to_gchat(webhook_url, user_name, message_text, channel_name, channel_id)
+                # Simple channel name based forwarding
+                if channel_name == "general":
+                    print("Forwarding to general Google Chat")
+                    forward_to_gchat(gchat_general_url, user_name, message_text, "general")
+                elif channel_name == "announcements":
+                    print("Forwarding to announcements Google Chat")
+                    forward_to_gchat(gchat_announcements_url, user_name, message_text, "announcements")
+                else:
+                    print(f"Message from #{channel_name}, not forwarding (only general and announcements are forwarded)")
         
         return {
             'statusCode': 200,
@@ -128,40 +125,68 @@ def verify_slack_signature(signing_secret, body, timestamp, signature):
     return hmac.compare_digest(expected_signature, signature)
 
 
-def get_channel_name(channel_id, event_data):
+
+
+
+def get_channel_name(channel_id, slack_bot_token):
     """
-    Extract channel name from event data or return channel_id if not found
+    Get channel name using Slack Web API
     """
-    # Try to get from team_id and use Slack Web API (simplified approach)
-    # For now, we'll use a mapping approach since we only care about 2 channels
+    try:
+        url = f"https://slack.com/api/conversations.info?channel={channel_id}"
+        headers = {
+            'Authorization': f'Bearer {slack_bot_token}',
+            'Content-Type': 'application/json'
+        }
 
-    # You would typically store these mappings or use Slack Web API
-    # For this implementation, we'll need to configure these channel IDs
-    # after setting up the Slack app
+        req = Request(url, headers=headers)
+        with urlopen(req) as response:
+            data = json.loads(response.read().decode())
 
-    # Common channel names to IDs (you'll need to update these)
-    channel_mappings = {
-        # Add your actual channel IDs here after Slack app setup
-        # 'C1234567890': 'general',
-        # 'C0987654321': 'announcements'
-    }
+        if data.get('ok'):
+            return data.get('channel', {}).get('name', 'unknown')
+        else:
+            print(f"Error getting channel info: {data.get('error')}")
+            return 'unknown'
 
-    return channel_mappings.get(channel_id, 'unknown')
+    except Exception as e:
+        print(f"Error fetching channel name: {e}")
+        return 'unknown'
 
 
-def get_user_display_name(user_id, event_data):
+def get_user_display_name(user_id, slack_bot_token):
     """
-    Get user display name from event data or return user_id if not found
+    Get user display name using Slack Web API
     """
-    # Try to get user info from the event data first
-    # Slack sometimes includes user info in the event
+    try:
+        url = f"https://slack.com/api/users.info?user={user_id}"
+        headers = {
+            'Authorization': f'Bearer {slack_bot_token}',
+            'Content-Type': 'application/json'
+        }
 
-    # For now, return a formatted user ID
-    # In production, you'd use Slack Web API: users.info
-    return f"User-{user_id[-4:]}"  # Show last 4 chars of user ID
+        req = Request(url, headers=headers)
+        with urlopen(req) as response:
+            data = json.loads(response.read().decode())
+
+        if data.get('ok'):
+            user = data.get('user', {})
+            # Try to get display name, real name, or fall back to username
+            display_name = (user.get('profile', {}).get('display_name') or
+                          user.get('real_name') or
+                          user.get('name') or
+                          f"User-{user_id[-4:]}")
+            return display_name
+        else:
+            print(f"Error getting user info: {data.get('error')}")
+            return f"User-{user_id[-4:]}"
+
+    except Exception as e:
+        print(f"Error fetching user name: {e}")
+        return f"User-{user_id[-4:]}"
 
 
-def forward_to_gchat(webhook_url, user_name, message_text, channel_name, channel_id=None):
+def forward_to_gchat(webhook_url, user_name, message_text, channel_name):
     """
     Forward the message to Google Chat using the webhook
     """

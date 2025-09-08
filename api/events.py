@@ -4,104 +4,110 @@ import hmac
 import hashlib
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from http.server import BaseHTTPRequestHandler
 
-def handler(request):
-    """
-    Vercel serverless function to handle Slack events and forward to Google Chat
-    """
-    
-    # Only handle POST requests
-    if request.method != 'POST':
-        return {
-            'statusCode': 405,
-            'body': json.dumps({'error': 'Method not allowed'})
-        }
-    
-    # Get environment variables
-    slack_signing_secret = os.environ.get('SLACK_SIGNING_SECRET')
-    slack_bot_token = os.environ.get('SLACK_BOT_TOKEN')
-    gchat_announcements_url = os.environ.get('GOOGLE_CHAT_ANNOUNCEMENTS_WEBHOOK_URL')
-    gchat_general_url = os.environ.get('GOOGLE_CHAT_GENERAL_WEBHOOK_URL')
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        """
+        Vercel serverless function to handle Slack events and forward to Google Chat
+        """
+        
+        # Get environment variables
+        slack_signing_secret = os.environ.get('SLACK_SIGNING_SECRET')
+        slack_bot_token = os.environ.get('SLACK_BOT_TOKEN')
+        gchat_announcements_url = os.environ.get('GOOGLE_CHAT_ANNOUNCEMENTS_WEBHOOK_URL')
+        gchat_general_url = os.environ.get('GOOGLE_CHAT_GENERAL_WEBHOOK_URL')
 
-    if not all([slack_signing_secret, slack_bot_token, gchat_announcements_url, gchat_general_url]):
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'error': 'Missing required environment variables'})
-        }
-    
-    try:
-        # Get request body and headers
-        body = request.get_data(as_text=True)
-        timestamp = request.headers.get('X-Slack-Request-Timestamp', '')
-        signature = request.headers.get('X-Slack-Signature', '')
+        if not all([slack_signing_secret, slack_bot_token, gchat_announcements_url, gchat_general_url]):
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'Missing required environment variables'}).encode())
+            return
         
-        # Verify Slack signature
-        if not verify_slack_signature(slack_signing_secret, body, timestamp, signature):
-            return {
-                'statusCode': 401,
-                'body': json.dumps({'error': 'Invalid signature'})
-            }
-        
-        # Parse the request body
-        event_data = json.loads(body)
-        
-        # Handle URL verification challenge (required by Slack)
-        if event_data.get('type') == 'url_verification':
-            challenge = event_data.get('challenge', '')
-            print(f"URL verification challenge received: {challenge}")
-            return {
-                'statusCode': 200,
-                'headers': {'Content-Type': 'text/plain'},
-                'body': challenge
-            }
-        
-        # Handle event callbacks
-        if event_data.get('type') == 'event_callback':
-            event = event_data.get('event', {})
+        try:
+            # Get request body and headers
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            timestamp = self.headers.get('X-Slack-Request-Timestamp', '')
+            signature = self.headers.get('X-Slack-Signature', '')
             
-            # Only process message events (not reactions, etc.)
-            if event.get('type') == 'message' and event.get('subtype') is None:
-                user_id = event.get('user')
-                message_text = event.get('text', '')
-                channel_id = event.get('channel')
+            # Verify Slack signature
+            if not verify_slack_signature(slack_signing_secret, body, timestamp, signature):
+                self.send_response(401)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'Invalid signature'}).encode())
+                return
+            
+            # Parse the request body
+            event_data = json.loads(body)
+            
+            # Handle URL verification challenge (required by Slack)
+            if event_data.get('type') == 'url_verification':
+                challenge = event_data.get('challenge', '')
+                print(f"URL verification challenge received: {challenge}")
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(challenge.encode())
+                return
+            
+            # Handle event callbacks
+            if event_data.get('type') == 'event_callback':
+                event = event_data.get('event', {})
+                
+                # Only process message events (not reactions, etc.)
+                if event.get('type') == 'message' and event.get('subtype') is None:
+                    user_id = event.get('user')
+                    message_text = event.get('text', '')
+                    channel_id = event.get('channel')
 
-                # Skip empty messages or bot messages
-                if not message_text.strip() or not user_id:
-                    return {
-                        'statusCode': 200,
-                        'body': json.dumps({'status': 'skipped_empty_or_bot_message'})
-                    }
+                    # Skip empty messages or bot messages
+                    if not message_text.strip() or not user_id:
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({'status': 'skipped_empty_or_bot_message'}).encode())
+                        return
 
-                # Get channel name using Slack API
-                channel_name = get_channel_name(channel_id, slack_bot_token)
+                    # Get channel name using Slack API
+                    channel_name = get_channel_name(channel_id, slack_bot_token)
 
-                # Get user display name using Slack API
-                user_name = get_user_display_name(user_id, slack_bot_token)
+                    # Get user display name using Slack API
+                    user_name = get_user_display_name(user_id, slack_bot_token)
 
-                # Log all messages for debugging
-                print(f"{user_name}: {message_text}")
+                    # Log all messages for debugging
+                    print(f"Message from #{channel_name} ({channel_id}): {user_name}: {message_text[:50]}...")
 
-                # Simple channel name based forwarding
-                if channel_name == "general":
-                    print("Forwarding to general Google Chat")
-                    forward_to_gchat(gchat_general_url, user_name, message_text, "general")
-                elif channel_name == "announcements":
-                    print("Forwarding to announcements Google Chat")
-                    forward_to_gchat(gchat_announcements_url, user_name, message_text, "announcements")
-                else:
-                    print(f"Message from #{channel_name}, not forwarding (only general and announcements are forwarded)")
-        
-        return {
-            'statusCode': 200,
-            'body': json.dumps({'status': 'ok'})
-        }
-        
-    except Exception as e:
-        print(f"Error processing request: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({'error': 'Internal server error'})
-        }
+                    # Simple channel name based forwarding
+                    if channel_name == "general":
+                        print("Forwarding to general Google Chat")
+                        forward_to_gchat(gchat_general_url, user_name, message_text, "general")
+                    elif channel_name == "announcements":
+                        print("Forwarding to announcements Google Chat")
+                        forward_to_gchat(gchat_announcements_url, user_name, message_text, "announcements")
+                    else:
+                        print(f"Message from #{channel_name}, not forwarding (only general and announcements are forwarded)")
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'ok'}).encode())
+            
+        except Exception as e:
+            print(f"Error processing request: {str(e)}")
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'Internal server error'}).encode())
+
+    def do_GET(self):
+        """Handle GET requests - return method not allowed"""
+        self.send_response(405)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({'error': 'Method not allowed'}).encode())
 
 
 def verify_slack_signature(signing_secret, body, timestamp, signature):
@@ -123,9 +129,6 @@ def verify_slack_signature(signing_secret, body, timestamp, signature):
     
     # Compare signatures
     return hmac.compare_digest(expected_signature, signature)
-
-
-
 
 
 def get_channel_name(channel_id, slack_bot_token):

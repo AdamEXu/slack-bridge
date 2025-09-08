@@ -79,7 +79,7 @@ def handler(request):
                 user_name = get_user_display_name(user_id, slack_bot_token)
 
                 # Log all messages for debugging
-                print(f"Message from #{channel_name} ({channel_id}): {user_name}: {message_text[:50]}...")
+                print(f"{user_name}: {message_text}")
 
                 # Simple channel name based forwarding
                 if channel_name == "general":
